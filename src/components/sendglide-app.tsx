@@ -4,9 +4,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import QRCode from "qrcode";
-import { AnimatePresence, motion } from "motion/react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   ArrowDownToLine,
+  ArrowRight,
+  ArrowUpRight,
   Check,
   ChevronRight,
   CircleAlert,
@@ -19,9 +21,14 @@ import {
   Link2,
   LockKeyhole,
   Monitor,
+  MousePointer2,
   Paperclip,
+  Radio,
+  ScanLine,
+  ShieldCheck,
   Smartphone,
   Unplug,
+  Zap,
   X,
 } from "lucide-react";
 import { detectContentKind, safeUrl } from "@/lib/content";
@@ -80,6 +87,7 @@ function message(value: WithoutProtocol<SendMessage>): SendMessage {
 }
 
 export function SendGlideApp({ initialCode }: { initialCode?: string }) {
+  const reduceMotion = useReducedMotion();
   const [connection, setConnection] = useState<ConnectionState>("idle");
   const [pairOpen, setPairOpen] = useState(Boolean(initialCode));
   const [code, setCode] = useState(
@@ -106,6 +114,12 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
   const receivedFiles = useRef(new Map<string, Blob>());
   const inputRef = useRef<HTMLInputElement>(null);
   const expiryTimer = useRef<number | null>(null);
+  const activeTransfer = transfers.find(
+    (item) => item.status === "sending" || item.status === "receiving",
+  );
+  const reveal = reduceMotion
+    ? {}
+    : { initial: { opacity: 0, y: 24 }, animate: { opacity: 1, y: 0 } };
 
   useEffect(() => {
     const frame = requestAnimationFrame(() => setDevice(getDeviceInfo()));
@@ -515,41 +529,141 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
 
   return (
     <main className="app-shell">
-      <header>
-        <Link href="/" className="brand">
-          SENDGLIDE
+      <div className="ambient" aria-hidden="true">
+        <i className="ambient-one" />
+        <i className="ambient-two" />
+        <span />
+      </div>
+      <motion.header
+        initial={reduceMotion ? false : { opacity: 0, y: -12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
+      >
+        <Link href="/" className="brand" aria-label="SendGlide home">
+          <BrandMark />
+          <span>SENDGLIDE</span>
         </Link>
-        <div className={`status-pill status-${connection}`}>
+        <nav aria-label="Primary navigation">
+          <a href="#how-it-works">How it works</a>
+          <a href="#privacy">Privacy</a>
+        </nav>
+        <motion.div
+          layout
+          className={`status-pill status-${connection}`}
+          aria-live="polite"
+        >
           <span />
           {connection === "idle" ? "Ready" : connection}
-        </div>
-      </header>
+        </motion.div>
+      </motion.header>
       <section className="hero">
-        <p className="eyebrow">MOVE ANYTHING. ANYWHERE.</p>
-        <h1>
-          Your devices
-          <br />
-          <span>finally talk.</span>
-        </h1>
-        <p className="lede">
-          Direct, private transfers between almost any modern device. No
-          account. No setup.
-        </p>
+        <motion.div
+          className="hero-copy"
+          {...reveal}
+          transition={{ duration: 0.65, ease: [0.22, 1, 0.36, 1] }}
+        >
+          <p className="eyebrow">
+            <i /> MOVE ANYTHING. ANYWHERE.
+          </p>
+          <h1>
+            <motion.span
+              className="hero-line hero-line-primary"
+              initial={reduceMotion ? false : { y: "105%" }}
+              animate={{ y: 0 }}
+              transition={{ duration: 0.72, ease: [0.22, 1, 0.36, 1] }}
+            >
+              Your devices
+            </motion.span>
+            <motion.span
+              className="hero-line hero-line-muted"
+              initial={reduceMotion ? false : { y: "105%" }}
+              animate={{ y: 0 }}
+              transition={{
+                duration: 0.72,
+                delay: 0.08,
+                ease: [0.22, 1, 0.36, 1],
+              }}
+            >
+              finally talk.
+            </motion.span>
+          </h1>
+          <div className="hero-bottom">
+            <p className="lede">
+              Direct, private transfers between almost any modern device. No
+              account. No setup.
+            </p>
+            <div
+              className="protocol-stamp"
+              aria-label="Uses the SEND version 1 protocol"
+            >
+              <Radio size={15} />
+              <span>SEND/1</span>
+              <small>LIVE PROTOCOL</small>
+            </div>
+          </div>
+        </motion.div>
       </section>
 
-      <section className="workspace" aria-label="Transfer workspace">
-        {connection === "connected" && device && peer ? (
-          <div className="device-flow">
-            <DeviceCard device={device} local />
-            <div className="glide-line">
-              <span />
-              <small>CONNECTED</small>
-            </div>
-            <DeviceCard device={peer} />
+      <motion.section
+        className="workspace"
+        aria-label="Transfer workspace"
+        initial={reduceMotion ? false : { opacity: 0, y: 38, scale: 0.985 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        transition={{ duration: 0.7, delay: 0.14, ease: [0.22, 1, 0.36, 1] }}
+      >
+        <div className="workspace-bar" aria-hidden="true">
+          <div>
+            <span />
+            <span />
+            <span />
           </div>
-        ) : null}
-        <button
+          <p>TRANSFER CONSOLE</p>
+          <small>
+            {connection === "connected" ? "PEER ONLINE" : "AWAITING PEER"}
+          </small>
+        </div>
+        <AnimatePresence mode="popLayout">
+          {connection === "connected" && device && peer ? (
+            <motion.div
+              className="device-flow"
+              initial={{ opacity: 0, height: 0, y: -10 }}
+              animate={{ opacity: 1, height: "auto", y: 0 }}
+              exit={{ opacity: 0, height: 0 }}
+              transition={{ type: "spring", stiffness: 260, damping: 28 }}
+            >
+              <DeviceCard device={device} local />
+              <div
+                className={`glide-line ${activeTransfer ? "is-transferring" : ""}`}
+              >
+                <i />
+                <motion.span
+                  animate={
+                    activeTransfer
+                      ? {
+                          left: `${Math.min(activeTransfer.progress * 100, 98)}%`,
+                        }
+                      : { left: ["2%", "96%", "2%"] }
+                  }
+                  transition={
+                    activeTransfer
+                      ? { duration: 0.18, ease: "easeOut" }
+                      : { duration: 2.6, repeat: Infinity, ease: "easeInOut" }
+                  }
+                />
+                <small>
+                  {activeTransfer
+                    ? `${Math.round(activeTransfer.progress * 100)}% GLIDING`
+                    : "ENCRYPTED LINK"}
+                </small>
+              </div>
+              <DeviceCard device={peer} />
+            </motion.div>
+          ) : null}
+        </AnimatePresence>
+        <motion.button
           className={`drop-zone ${dragging ? "dragging" : ""}`}
+          animate={dragging ? { scale: 0.992 } : { scale: 1 }}
+          transition={{ type: "spring", stiffness: 350, damping: 25 }}
           onClick={() => inputRef.current?.click()}
           onDragEnter={(e) => {
             e.preventDefault();
@@ -563,8 +677,12 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
             offerFiles(e.dataTransfer.files);
           }}
         >
+          <span className="drop-grid" aria-hidden="true" />
+          <span className="drop-beam" aria-hidden="true" />
           <span className="drop-icon">
-            <ArrowDownToLine size={28} />
+            <i />
+            <i />
+            <ArrowDownToLine size={27} />
           </span>
           <strong>
             {connection === "connected"
@@ -572,7 +690,10 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
               : "Connect, then drop anything"}
           </strong>
           <span>Files · Photos · Video · Text · Links</span>
-        </button>
+          <small>
+            <MousePointer2 size={13} /> Click, paste, or drag from anywhere
+          </small>
+        </motion.button>
         <input
           ref={inputRef}
           className="sr-only"
@@ -603,10 +724,17 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
               </button>
             </>
           ) : (
-            <button className="primary" onClick={createSession}>
-              Connect another device
-              <ChevronRight size={18} />
-            </button>
+            <motion.button
+              className="primary magnetic-cta"
+              onClick={createSession}
+              whileHover={reduceMotion ? undefined : { y: -2 }}
+              whileTap={{ scale: 0.98 }}
+            >
+              <span>Connect another device</span>
+              <i>
+                <ArrowRight size={18} />
+              </i>
+            </motion.button>
           )}
         </div>
         {connection === "connected" ? (
@@ -630,10 +758,14 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
             </div>
           </div>
         ) : null}
-      </section>
+      </motion.section>
 
       {transfers.length ? (
-        <section className="transfer-list">
+        <motion.section
+          className="transfer-list"
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+        >
           <div className="section-heading">
             <p className="eyebrow">TRANSFERS</p>
             <button
@@ -646,37 +778,110 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
               Clear completed
             </button>
           </div>
-          {transfers.map((item) => (
-            <TransferRow
-              key={item.id}
-              item={item}
-              onRemove={() =>
-                setTransfers((items) =>
-                  items.filter((entry) => entry.id !== item.id),
-                )
-              }
-            />
-          ))}
-        </section>
+          <AnimatePresence initial={false}>
+            {transfers.map((item) => (
+              <TransferRow
+                key={item.id}
+                item={item}
+                onRemove={() =>
+                  setTransfers((items) =>
+                    items.filter((entry) => entry.id !== item.id),
+                  )
+                }
+              />
+            ))}
+          </AnimatePresence>
+        </motion.section>
       ) : null}
 
-      <section className="trust-row">
-        <div>
+      <motion.section
+        className="trust-row"
+        initial={reduceMotion ? false : { opacity: 0, y: 24 }}
+        whileInView={{ opacity: 1, y: 0 }}
+        viewport={{ once: true, amount: 0.3 }}
+        transition={{ duration: 0.55 }}
+      >
+        <div className="trust-card">
           <Globe2 />
           <strong>Works everywhere</strong>
           <span>Any modern browser</span>
         </div>
-        <div>
-          <LockKeyhole />
+        <div className="trust-card featured">
+          <ShieldCheck />
           <strong>Direct transfer</strong>
           <span>Encrypted by WebRTC</span>
         </div>
-        <div>
+        <div className="trust-card">
           <Clipboard />
           <strong>No account</strong>
           <span>Pair and go</span>
         </div>
+      </motion.section>
+
+      <section className="how-section" id="how-it-works">
+        <motion.div
+          className="how-heading"
+          initial={reduceMotion ? false : { opacity: 0, y: 28 }}
+          whileInView={{ opacity: 1, y: 0 }}
+          viewport={{ once: true, amount: 0.4 }}
+        >
+          <p className="eyebrow">
+            <i /> HOW IT GLIDES
+          </p>
+          <h2>
+            Three moves.
+            <br />
+            <span>Zero friction.</span>
+          </h2>
+        </motion.div>
+        <div className="steps-grid">
+          <StepCard
+            number="01"
+            icon={<ScanLine />}
+            title="Scan"
+            copy="Open SendGlide on your second device and scan the temporary QR."
+            delay={0}
+            reduced={Boolean(reduceMotion)}
+          />
+          <StepCard
+            number="02"
+            icon={<Zap />}
+            title="Connect"
+            copy="Browsers negotiate a private encrypted WebRTC connection."
+            delay={0.06}
+            reduced={Boolean(reduceMotion)}
+          />
+          <StepCard
+            number="03"
+            icon={<FileUp />}
+            title="Glide"
+            copy="Drop anything. Real progress follows every byte to the other side."
+            delay={0.12}
+            reduced={Boolean(reduceMotion)}
+          />
+        </div>
       </section>
+
+      <section className="privacy-banner" id="privacy">
+        <div className="privacy-orbit" aria-hidden="true">
+          <i />
+          <span>
+            <LockKeyhole />
+          </span>
+        </div>
+        <div>
+          <p className="eyebrow">PRIVATE BY ARCHITECTURE</p>
+          <h2>Your files take the shortest path.</h2>
+          <p>
+            Direct peer-to-peer transfer whenever the network allows it.
+            Signaling coordinates the connection — it does not store your files.
+          </p>
+        </div>
+        <Link href="/privacy">
+          Read our privacy model <ArrowUpRight size={16} />
+        </Link>
+      </section>
+
       <footer>
         <span>© {new Date().getFullYear()} SendGlide</span>
         <Link href="/privacy">Privacy</Link>
@@ -822,7 +1027,13 @@ function DeviceCard({
 }) {
   const phone = /iOS|Android/.test(device.platform);
   return (
-    <div className="device-card">
+    <motion.div
+      className="device-card"
+      layout
+      initial={{ opacity: 0, scale: 0.96 }}
+      animate={{ opacity: 1, scale: 1 }}
+      transition={{ type: "spring", stiffness: 300, damping: 26 }}
+    >
       {phone ? <Smartphone /> : <Monitor />}
       <div>
         <small>{local ? "THIS DEVICE" : "PAIRED DEVICE"}</small>
@@ -832,7 +1043,7 @@ function DeviceCard({
         </span>
       </div>
       <i />
-    </div>
+    </motion.div>
   );
 }
 
@@ -853,7 +1064,14 @@ function TransferRow({
     }
   };
   return (
-    <article className="transfer-row">
+    <motion.article
+      layout
+      className={`transfer-row transfer-${item.status}`}
+      initial={{ opacity: 0, y: 12, scale: 0.99 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, x: 20, transition: { duration: 0.16 } }}
+      transition={{ type: "spring", stiffness: 320, damping: 28 }}
+    >
       <div className="file-glyph">{item.text ? <Link2 /> : <FolderOpen />}</div>
       <div className="transfer-main">
         <div>
@@ -907,6 +1125,47 @@ function TransferRow({
           <X size={17} />
         </button>
       </div>
-    </article>
+    </motion.article>
+  );
+}
+
+function BrandMark() {
+  return (
+    <span className="brand-mark" aria-hidden="true">
+      <i />
+      <ArrowRight size={14} />
+    </span>
+  );
+}
+
+function StepCard({
+  number,
+  icon,
+  title,
+  copy,
+  delay,
+  reduced,
+}: {
+  number: string;
+  icon: React.ReactNode;
+  title: string;
+  copy: string;
+  delay: number;
+  reduced: boolean;
+}) {
+  return (
+    <motion.article
+      className="step-card"
+      initial={reduced ? false : { opacity: 0, y: 26 }}
+      whileInView={{ opacity: 1, y: 0 }}
+      viewport={{ once: true, amount: 0.35 }}
+      transition={{ duration: 0.5, delay, ease: [0.22, 1, 0.36, 1] }}
+    >
+      <span className="step-number">{number}</span>
+      <div className="step-icon">{icon}</div>
+      <h3>{title}</h3>
+      <p>{copy}</p>
+      <i className="step-line" />
+    </motion.article>
   );
 }
