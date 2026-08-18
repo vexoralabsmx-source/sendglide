@@ -7,6 +7,7 @@ export class WebRTCTransport {
   private channel: RTCDataChannel | null = null;
   private signal: SignalConnection;
   private sender: string;
+  private iceServers: RTCIceServer[];
   private pendingCandidates: RTCIceCandidateInit[] = [];
   private offerStarted = false;
   private disconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -21,28 +22,42 @@ export class WebRTCTransport {
   ) {
     this.signal = signal;
     this.sender = sender;
-    this.peer = new RTCPeerConnection({ iceServers });
-    this.peer.onicecandidate = ({ candidate }) =>
+    this.iceServers = iceServers;
+    this.peer = this.createPeer();
+  }
+
+  private createPeer(): RTCPeerConnection {
+    const peer = new RTCPeerConnection({ iceServers: this.iceServers });
+    peer.onicecandidate = ({ candidate }) =>
       candidate && void this.emit("ice", candidate.toJSON());
-    this.peer.ondatachannel = ({ channel }) => this.bindChannel(channel);
-    this.peer.onconnectionstatechange = () => {
-      const state = this.peer.connectionState;
+    peer.ondatachannel = ({ channel }) => this.bindChannel(channel);
+    peer.onconnectionstatechange = () => {
+      const state = peer.connectionState;
       if (state === "connected") {
         if (this.disconnectTimer) clearTimeout(this.disconnectTimer);
         this.disconnectTimer = null;
       } else if (state === "disconnected") {
         if (this.disconnectTimer) clearTimeout(this.disconnectTimer);
         this.disconnectTimer = setTimeout(() => {
-          if (this.peer.connectionState === "disconnected") this.onClose?.();
+          if (peer.connectionState === "disconnected") this.onClose?.();
         }, 8_000);
       } else if (state === "failed" || state === "closed") {
         this.onClose?.();
       }
     };
+    return peer;
   }
 
   async startOffer(): Promise<void> {
-    if (this.offerStarted) return;
+    if (this.offerStarted) {
+      if (
+        this.peer.connectionState === "disconnected" ||
+        this.peer.connectionState === "failed" ||
+        this.peer.connectionState === "closed"
+      )
+        this.resetPeer();
+      else return;
+    }
     this.offerStarted = true;
     this.bindChannel(this.peer.createDataChannel("send-1", { ordered: true }));
     const offer = await this.peer.createOffer();
@@ -94,6 +109,21 @@ export class WebRTCTransport {
     this.channel?.close();
     this.peer.close();
     void this.signal.close();
+  }
+
+  private resetPeer(): void {
+    if (this.disconnectTimer) clearTimeout(this.disconnectTimer);
+    this.disconnectTimer = null;
+    if (this.channel) {
+      this.channel.onclose = null;
+      this.channel.close();
+    }
+    this.peer.onconnectionstatechange = null;
+    this.peer.close();
+    this.channel = null;
+    this.pendingCandidates = [];
+    this.offerStarted = false;
+    this.peer = this.createPeer();
   }
 
   private bindChannel(channel: RTCDataChannel): void {

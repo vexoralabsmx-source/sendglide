@@ -20,11 +20,13 @@ import {
   Globe2,
   Image as ImageIcon,
   Link2,
+  Languages,
   LockKeyhole,
   Monitor,
   MousePointer2,
   Paperclip,
   Radio,
+  RotateCcw,
   ScanLine,
   ShieldCheck,
   Smartphone,
@@ -57,6 +59,7 @@ import {
   sha256,
 } from "@/lib/transfer";
 import { WebRTCTransport } from "@/lib/webrtc";
+import { copy, detectLocale, type Locale } from "@/lib/i18n";
 
 const MoltenMetal = dynamic(
   () =>
@@ -72,6 +75,8 @@ type ConnectionState =
   | "disconnected"
   | "expired"
   | "error";
+type PairRole = "host" | "guest" | null;
+type PairingPhase = "idle" | "finding" | "negotiating" | "ready" | "failed";
 type Transfer = {
   id: string;
   name: string;
@@ -95,8 +100,15 @@ function message(value: WithoutProtocol<SendMessage>): SendMessage {
 
 export function SendGlideApp({ initialCode }: { initialCode?: string }) {
   const reduceMotion = useReducedMotion();
+  const [locale, setLocale] = useState<Locale>("en");
   const [connection, setConnection] = useState<ConnectionState>("idle");
   const [pairOpen, setPairOpen] = useState(Boolean(initialCode));
+  const [pairRole, setPairRole] = useState<PairRole>(
+    initialCode ? "guest" : null,
+  );
+  const [pairingPhase, setPairingPhase] = useState<PairingPhase>(
+    initialCode ? "finding" : "idle",
+  );
   const [code, setCode] = useState(
     initialCode ? normalizePairingCode(initialCode) : "",
   );
@@ -123,6 +135,11 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
   const receivedFiles = useRef(new Map<string, Blob>());
   const inputRef = useRef<HTMLInputElement>(null);
   const expiryTimer = useRef<number | null>(null);
+  const connectionTimer = useRef<number | null>(null);
+  const joinRetryTimer = useRef<number | null>(null);
+  const connectionAttempt = useRef(0);
+  const localeRef = useRef<Locale>("en");
+  const t = copy[locale];
   const activeTransfer = transfers.find(
     (item) => item.status === "sending" || item.status === "receiving",
   );
@@ -134,13 +151,38 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
     const frame = requestAnimationFrame(() => setDevice(getDeviceInfo()));
     return () => cancelAnimationFrame(frame);
   }, []);
+  useEffect(() => {
+    localeRef.current = locale;
+    document.documentElement.setAttribute("lang", locale);
+  }, [locale]);
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      const saved = window.localStorage.getItem("sendglide-locale");
+      const next =
+        saved === "es" || saved === "en"
+          ? saved
+          : detectLocale(navigator.language);
+      localeRef.current = next;
+      setLocale(next);
+      document.documentElement.lang = next;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, []);
   useEffect(
     () => () => {
       transport.current?.close();
       if (expiryTimer.current) clearTimeout(expiryTimer.current);
+      if (connectionTimer.current) clearTimeout(connectionTimer.current);
+      if (joinRetryTimer.current) clearInterval(joinRetryTimer.current);
     },
     [],
   );
+
+  const changeLocale = (next: Locale) => {
+    localeRef.current = next;
+    setLocale(next);
+    window.localStorage.setItem("sendglide-locale", next);
+  };
   useEffect(() => {
     if (
       !("serviceWorker" in navigator) ||
@@ -172,7 +214,7 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
     try {
       transport.current?.send(JSON.stringify(payload));
     } catch {
-      setNotice("Peer connection is not ready. Try again.");
+      setNotice(copy[localeRef.current].notice.peerNotReady);
     }
   }, []);
 
@@ -316,7 +358,10 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
           setTransfers((items) => [
             {
               id: payload.transferId,
-              name: payload.kind === "url" ? "Link" : "Text",
+              name:
+                payload.kind === "url"
+                  ? copy[localeRef.current].linkLabel
+                  : copy[localeRef.current].textLabel,
               size: new Blob([payload.text]).size,
               direction: "in",
               progress: 1,
@@ -345,7 +390,7 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
           const parsed = parseSendMessage(JSON.parse(data));
           if (parsed) void handleProtocol(parsed);
         } catch {
-          setNotice("A malformed peer message was blocked.");
+          setNotice(copy[localeRef.current].notice.malformed);
         }
         return;
       }
@@ -378,26 +423,38 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
 
   const connect = useCallback(
     async (room: string, host: boolean) => {
+      const attempt = ++connectionAttempt.current;
+      const translated = copy[localeRef.current];
       if (!device || !("RTCPeerConnection" in window)) {
-        setNotice("WebRTC is not supported in this browser.");
+        setNotice(translated.notice.unsupported);
         setConnection("error");
+        setPairingPhase("failed");
         return;
       }
       const normalized = normalizePairingCode(room);
       if (normalized.length !== 6) {
-        setNotice("Enter the complete 6-character code.");
+        setNotice(translated.notice.incompleteCode);
         return;
       }
+      transport.current?.close();
+      transport.current = null;
+      if (signal.current) void signal.current.close();
+      signal.current = null;
+      if (connectionTimer.current) clearTimeout(connectionTimer.current);
+      if (joinRetryTimer.current) clearInterval(joinRetryTimer.current);
       setCode(normalized);
+      setJoinCode(normalized);
+      setPairRole(host ? "host" : "guest");
+      setPairingPhase(host ? "idle" : "finding");
+      setNotice("");
       setConnection(host ? "waiting" : "connecting");
       if (expiryTimer.current) clearTimeout(expiryTimer.current);
       expiryTimer.current = window.setTimeout(
         () => {
           transport.current?.close();
           setConnection("expired");
-          setNotice(
-            "This pairing session expired after one hour. Create a new one to continue.",
-          );
+          setPairingPhase("failed");
+          setNotice(copy[localeRef.current].notice.expired);
         },
         60 * 60 * 1000,
       );
@@ -409,14 +466,23 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
           (payload: SignalPayload) => {
             if (payload.sender === device.id) return;
             if (host && payload.kind === "join") void rtc?.startOffer();
-            else void rtc?.handleSignal(payload);
+            else
+              void rtc?.handleSignal(payload).catch(() => {
+                setPairingPhase("failed");
+                setConnection("error");
+                setNotice(copy[localeRef.current].notice.timeout);
+              });
           },
         );
       } catch {
+        if (attempt !== connectionAttempt.current) return;
         setConnection("error");
-        setNotice(
-          "Signaling is unavailable. Check the Supabase Realtime configuration.",
-        );
+        setPairingPhase("failed");
+        setNotice(copy[localeRef.current].notice.signaling);
+        return;
+      }
+      if (attempt !== connectionAttempt.current) {
+        await signaling.close();
         return;
       }
       signal.current = signaling;
@@ -428,8 +494,19 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
         )
         .catch(() => [{ urls: "stun:stun.l.google.com:19302" }]);
       rtc = new WebRTCTransport(signaling, device.id, iceServers);
+      if (attempt !== connectionAttempt.current) {
+        rtc.close();
+        return;
+      }
       transport.current = rtc;
+      if (!host) setPairingPhase("negotiating");
       rtc.onOpen = () => {
+        if (attempt !== connectionAttempt.current) return;
+        if (connectionTimer.current) clearTimeout(connectionTimer.current);
+        if (joinRetryTimer.current) clearInterval(joinRetryTimer.current);
+        connectionTimer.current = null;
+        joinRetryTimer.current = null;
+        setPairingPhase("ready");
         setConnection("connected");
         setPairOpen(false);
         sendProtocol(message({ type: "hello", device }));
@@ -437,12 +514,40 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
           offerSelectedFiles(pendingFiles.current);
           pendingFiles.current = [];
           setPendingFileCount(0);
-          setNotice("Connected. Your queued files are ready for approval.");
+          setNotice(copy[localeRef.current].notice.queuedConnected);
         }
       };
-      rtc.onClose = () => setConnection("disconnected");
+      rtc.onClose = () => {
+        if (attempt !== connectionAttempt.current) return;
+        if (connectionTimer.current) clearTimeout(connectionTimer.current);
+        if (joinRetryTimer.current) clearInterval(joinRetryTimer.current);
+        connectionTimer.current = null;
+        joinRetryTimer.current = null;
+        setConnection((current) =>
+          current === "connected" ? "disconnected" : "error",
+        );
+        setPairingPhase((current) =>
+          current === "ready" ? current : "failed",
+        );
+      };
       rtc.onMessage = handleData;
-      if (!host) await signaling.send({ sender: device.id, kind: "join" });
+      if (!host) {
+        const announce = () =>
+          signaling
+            .send({ sender: device.id, kind: "join" })
+            .catch(() => undefined);
+        await announce();
+        joinRetryTimer.current = window.setInterval(announce, 1_800);
+        connectionTimer.current = window.setTimeout(() => {
+          if (attempt !== connectionAttempt.current) return;
+          if (joinRetryTimer.current) clearInterval(joinRetryTimer.current);
+          joinRetryTimer.current = null;
+          rtc?.close();
+          setPairingPhase("failed");
+          setConnection("error");
+          setNotice(copy[localeRef.current].notice.timeout);
+        }, 20_000);
+      }
     },
     [device, handleData, offerSelectedFiles, sendProtocol],
   );
@@ -458,6 +563,21 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
     setPairOpen(true);
     void connect(next, true);
   };
+  const openJoin = () => {
+    connectionAttempt.current += 1;
+    transport.current?.close();
+    transport.current = null;
+    if (signal.current) void signal.current.close();
+    signal.current = null;
+    if (connectionTimer.current) clearTimeout(connectionTimer.current);
+    if (joinRetryTimer.current) clearInterval(joinRetryTimer.current);
+    setPairRole("guest");
+    setPairingPhase("idle");
+    setConnection("idle");
+    setCode("");
+    setJoinCode("");
+    setPairOpen(true);
+  };
   const offerFiles = useCallback(
     (files: FileList | File[]) => {
       const selected = Array.from(files);
@@ -466,8 +586,10 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
         pendingFiles.current.push(...selected);
         setPendingFileCount(pendingFiles.current.length);
         setNotice(
-          `${pendingFiles.current.length} file${pendingFiles.current.length === 1 ? " is" : "s are"} ready. Connect a device to send.`,
+          copy[localeRef.current].notice.queued(pendingFiles.current.length),
         );
+        setPairRole(null);
+        setPairingPhase("idle");
         setPairOpen(true);
         return;
       }
@@ -479,7 +601,7 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
     const value = text.trim();
     if (!value || connection !== "connected") {
       if (connection !== "connected")
-        setNotice("Connect a device to send text.");
+        setNotice(copy[localeRef.current].notice.connectForText);
       return;
     }
     const kind = detectContentKind(value);
@@ -488,7 +610,10 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
     setTransfers((items) => [
       {
         id,
-        name: kind === "url" ? "Link" : "Text",
+        name:
+          kind === "url"
+            ? copy[localeRef.current].linkLabel
+            : copy[localeRef.current].textLabel,
         size: new Blob([value]).size,
         direction: "out",
         progress: 1,
@@ -527,10 +652,15 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
     setIncoming(offerQueue.current[0] ?? null);
   };
   const disconnect = () => {
+    connectionAttempt.current += 1;
     transport.current?.close();
     transport.current = null;
     if (expiryTimer.current) clearTimeout(expiryTimer.current);
+    if (connectionTimer.current) clearTimeout(connectionTimer.current);
+    if (joinRetryTimer.current) clearInterval(joinRetryTimer.current);
     setConnection("idle");
+    setPairRole(null);
+    setPairingPhase("idle");
     setPeer(null);
     setCode("");
   };
@@ -585,22 +715,42 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
       >
-        <Link href="/" className="brand" aria-label="SendGlide home">
+        <Link href="/" className="brand" aria-label={t.homeLabel}>
           <BrandMark />
           <span>SENDGLIDE</span>
         </Link>
-        <nav aria-label="Primary navigation">
-          <a href="#how-it-works">How it works</a>
-          <a href="#privacy">Privacy</a>
+        <nav aria-label={t.primaryNav}>
+          <a href="#how-it-works">{t.howNav}</a>
+          <a href="#privacy">{t.privacyNav}</a>
         </nav>
-        <motion.div
-          layout
-          className={`status-pill status-${connection}`}
-          aria-live="polite"
-        >
-          <span />
-          {connection === "idle" ? "Ready" : connection}
-        </motion.div>
+        <div className="header-actions">
+          <motion.div
+            layout
+            className={`status-pill status-${connection}`}
+            aria-live="polite"
+          >
+            <span />
+            {t.status[connection]}
+          </motion.div>
+          <div
+            className="language-switch"
+            role="group"
+            aria-label={t.switchLanguage}
+          >
+            <Languages size={15} aria-hidden="true" />
+            {(["es", "en"] as const).map((option) => (
+              <button
+                key={option}
+                type="button"
+                className={locale === option ? "active" : ""}
+                aria-pressed={locale === option}
+                onClick={() => changeLocale(option)}
+              >
+                {option.toUpperCase()}
+              </button>
+            ))}
+          </div>
+        </div>
       </motion.header>
       <section className="hero">
         <motion.div
@@ -609,7 +759,7 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
           transition={{ duration: 0.65, ease: [0.22, 1, 0.36, 1] }}
         >
           <p className="eyebrow">
-            <i /> MOVE ANYTHING. ANYWHERE.
+            <i /> {t.eyebrow}
           </p>
           <h1>
             <motion.span
@@ -618,7 +768,7 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
               animate={{ y: 0 }}
               transition={{ duration: 0.72, ease: [0.22, 1, 0.36, 1] }}
             >
-              Your devices
+              {t.heroPrimary}
             </motion.span>
             <motion.span
               className="hero-line hero-line-muted"
@@ -630,21 +780,15 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
                 ease: [0.22, 1, 0.36, 1],
               }}
             >
-              finally talk.
+              {t.heroMuted}
             </motion.span>
           </h1>
           <div className="hero-bottom">
-            <p className="lede">
-              Direct, private transfers between almost any modern device. No
-              account. No setup.
-            </p>
-            <div
-              className="protocol-stamp"
-              aria-label="Uses the SEND version 1 protocol"
-            >
+            <p className="lede">{t.lede}</p>
+            <div className="protocol-stamp">
               <Radio size={15} />
               <span>SEND/1</span>
-              <small>LIVE PROTOCOL</small>
+              <small>{t.liveProtocol}</small>
             </div>
           </div>
         </motion.div>
@@ -652,7 +796,7 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
 
       <motion.section
         className="workspace"
-        aria-label="Transfer workspace"
+        aria-label={t.workspaceLabel}
         initial={reduceMotion ? false : { opacity: 0, y: 38, scale: 0.985 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
         transition={{ duration: 0.7, delay: 0.14, ease: [0.22, 1, 0.36, 1] }}
@@ -663,9 +807,9 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
             <span />
             <span />
           </div>
-          <p>TRANSFER CONSOLE</p>
+          <p>{t.transferConsole}</p>
           <small>
-            {connection === "connected" ? "PEER ONLINE" : "AWAITING PEER"}
+            {connection === "connected" ? t.peerOnline : t.awaitingPeer}
           </small>
         </div>
         <AnimatePresence mode="popLayout">
@@ -677,7 +821,7 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
               exit={{ opacity: 0, height: 0 }}
               transition={{ type: "spring", stiffness: 260, damping: 28 }}
             >
-              <DeviceCard device={device} local />
+              <DeviceCard device={device} local labels={t} />
               <div
                 className={`glide-line ${activeTransfer ? "is-transferring" : ""}`}
               >
@@ -698,11 +842,11 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
                 />
                 <small>
                   {activeTransfer
-                    ? `${Math.round(activeTransfer.progress * 100)}% GLIDING`
-                    : "ENCRYPTED LINK"}
+                    ? `${Math.round(activeTransfer.progress * 100)}% ${t.gliding}`
+                    : t.encryptedLink}
                 </small>
               </div>
-              <DeviceCard device={peer} />
+              <DeviceCard device={peer} labels={t} />
             </motion.div>
           ) : null}
         </AnimatePresence>
@@ -732,14 +876,14 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
           </span>
           <strong>
             {connection === "connected"
-              ? "Drop anything here"
+              ? t.dropConnected
               : pendingFileCount
-                ? `${pendingFileCount} file${pendingFileCount === 1 ? "" : "s"} ready to glide`
-                : "Connect, then drop anything"}
+                ? t.readyFiles(pendingFileCount)
+                : t.dropDisconnected}
           </strong>
-          <span>Files · Photos · Video · Text · Links</span>
+          <span>{t.contentKinds}</span>
           <small>
-            <MousePointer2 size={13} /> Click, paste, or drag from anywhere
+            <MousePointer2 size={13} /> {t.dropHint}
           </small>
         </motion.button>
         <input
@@ -747,6 +891,7 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
           className="sr-only"
           type="file"
           multiple
+          aria-label={t.chooseFiles}
           onChange={(e) => e.target.files && offerFiles(e.target.files)}
         />
         <div className="quick-actions">
@@ -754,11 +899,11 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
             <>
               <button onClick={() => inputRef.current?.click()}>
                 <Paperclip size={18} />
-                Choose files
+                {t.chooseFiles}
               </button>
               <label>
                 <ImageIcon size={18} />
-                Take photo
+                {t.takePhoto}
                 <input
                   type="file"
                   accept="image/*"
@@ -768,38 +913,44 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
               </label>
               <button onClick={disconnect}>
                 <Unplug size={18} />
-                Disconnect
+                {t.disconnect}
               </button>
             </>
           ) : (
-            <motion.button
-              className="primary magnetic-cta"
-              onClick={createSession}
-              whileHover={reduceMotion ? undefined : { y: -2 }}
-              whileTap={{ scale: 0.98 }}
-            >
-              <span>Connect another device</span>
-              <i>
-                <ArrowRight size={18} />
-              </i>
-            </motion.button>
+            <>
+              <motion.button
+                className="primary magnetic-cta"
+                onClick={createSession}
+                whileHover={reduceMotion ? undefined : { y: -2 }}
+                whileTap={{ scale: 0.98 }}
+              >
+                <span>{t.connectDevice}</span>
+                <i>
+                  <ArrowRight size={18} />
+                </i>
+              </motion.button>
+              <button className="code-entry-button" onClick={openJoin}>
+                <ScanLine size={17} />
+                {t.enterCode}
+              </button>
+            </>
           )}
         </div>
         {connection === "connected" ? (
           <div className="text-send">
-            <label htmlFor="text-share">Send text or a link</label>
+            <label htmlFor="text-share">{t.sendTextLabel}</label>
             <div>
               <textarea
                 id="text-share"
                 value={text}
                 onChange={(e) => setText(e.target.value)}
-                placeholder="Paste a note, URL, command…"
+                placeholder={t.sendTextPlaceholder}
                 rows={2}
               />
               <button
                 onClick={sendText}
                 disabled={!text.trim()}
-                aria-label="Send text"
+                aria-label={t.sendText}
               >
                 <ChevronRight />
               </button>
@@ -815,7 +966,7 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
           animate={{ opacity: 1, y: 0 }}
         >
           <div className="section-heading">
-            <p className="eyebrow">TRANSFERS</p>
+            <p className="eyebrow">{t.transfers}</p>
             <button
               onClick={() =>
                 setTransfers((items) =>
@@ -823,7 +974,7 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
                 )
               }
             >
-              Clear completed
+              {t.clearCompleted}
             </button>
           </div>
           <AnimatePresence initial={false}>
@@ -831,6 +982,7 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
               <TransferRow
                 key={item.id}
                 item={item}
+                labels={t}
                 onRemove={() =>
                   setTransfers((items) =>
                     items.filter((entry) => entry.id !== item.id),
@@ -851,18 +1003,18 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
       >
         <div className="trust-card">
           <Globe2 />
-          <strong>Works everywhere</strong>
-          <span>Any modern browser</span>
+          <strong>{t.worksEverywhere}</strong>
+          <span>{t.modernBrowser}</span>
         </div>
         <div className="trust-card featured">
           <ShieldCheck />
-          <strong>Direct transfer</strong>
-          <span>Encrypted by WebRTC</span>
+          <strong>{t.directTransfer}</strong>
+          <span>{t.encryptedWebrtc}</span>
         </div>
         <div className="trust-card">
           <Clipboard />
-          <strong>No account</strong>
-          <span>Pair and go</span>
+          <strong>{t.noAccount}</strong>
+          <span>{t.pairAndGo}</span>
         </div>
       </motion.section>
 
@@ -874,36 +1026,36 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
           viewport={{ once: true, amount: 0.4 }}
         >
           <p className="eyebrow">
-            <i /> HOW IT GLIDES
+            <i /> {t.howEyebrow}
           </p>
           <h2>
-            Three moves.
+            {t.howTitle}
             <br />
-            <span>Zero friction.</span>
+            <span>{t.howAccent}</span>
           </h2>
         </motion.div>
         <div className="steps-grid">
           <StepCard
             number="01"
             icon={<ScanLine />}
-            title="Scan"
-            copy="Open SendGlide on your second device and scan the temporary QR."
+            title={t.scan}
+            copy={t.scanCopy}
             delay={0}
             reduced={Boolean(reduceMotion)}
           />
           <StepCard
             number="02"
             icon={<Zap />}
-            title="Connect"
-            copy="Browsers negotiate a private encrypted WebRTC connection."
+            title={t.connect}
+            copy={t.connectCopy}
             delay={0.06}
             reduced={Boolean(reduceMotion)}
           />
           <StepCard
             number="03"
             icon={<FileUp />}
-            title="Glide"
-            copy="Drop anything. Real progress follows every byte to the other side."
+            title={t.glide}
+            copy={t.glideCopy}
             delay={0.12}
             reduced={Boolean(reduceMotion)}
           />
@@ -918,22 +1070,19 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
           </span>
         </div>
         <div>
-          <p className="eyebrow">PRIVATE BY ARCHITECTURE</p>
-          <h2>Your files take the shortest path.</h2>
-          <p>
-            Direct peer-to-peer transfer whenever the network allows it.
-            Signaling coordinates the connection — it does not store your files.
-          </p>
+          <p className="eyebrow">{t.privateArchitecture}</p>
+          <h2>{t.privacyTitle}</h2>
+          <p>{t.privacyCopy}</p>
         </div>
         <Link href="/privacy">
-          Read our privacy model <ArrowUpRight size={16} />
+          {t.privacyLink} <ArrowUpRight size={16} />
         </Link>
       </section>
 
       <footer>
         <span>© {new Date().getFullYear()} SendGlide</span>
-        <Link href="/privacy">Privacy</Link>
-        <span>Files never touch our servers in direct mode.</span>
+        <Link href="/privacy">{t.footerPrivacy}</Link>
+        <span>{t.footerClaim}</span>
       </footer>
 
       <AnimatePresence>
@@ -953,23 +1102,79 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: 8 }}
             >
+              <div
+                className="modal-language"
+                role="group"
+                aria-label={t.switchLanguage}
+              >
+                {(["es", "en"] as const).map((option) => (
+                  <button
+                    key={option}
+                    type="button"
+                    className={locale === option ? "active" : ""}
+                    aria-pressed={locale === option}
+                    onClick={() => changeLocale(option)}
+                  >
+                    {option.toUpperCase()}
+                  </button>
+                ))}
+              </div>
               <button
                 className="modal-close"
                 onClick={() => setPairOpen(false)}
-                aria-label="Close"
+                aria-label={t.modal.close}
               >
                 <X />
               </button>
-              <p className="eyebrow">PAIR A DEVICE</p>
-              <h2 id="pair-title">Scan. Connect. Glide.</h2>
+              <p className="eyebrow">{t.modal.eyebrow}</p>
+              <h2 id="pair-title">
+                {pairRole === "host"
+                  ? t.modal.hostTitle
+                  : pairRole === "guest"
+                    ? t.modal.guestTitle
+                    : t.modal.chooseTitle}
+              </h2>
+              <p className="pair-intro">
+                {pairRole === "host"
+                  ? t.modal.hostCopy
+                  : pairRole === "guest"
+                    ? t.modal.guestCopy
+                    : t.modal.chooseCopy}
+              </p>
               {pendingFileCount ? (
                 <div className="queued-files" role="status">
                   <Paperclip size={15} />
-                  {pendingFileCount} queued file
-                  {pendingFileCount === 1 ? "" : "s"}
+                  {t.modal.queuedFile(pendingFileCount)}
                 </div>
               ) : null}
-              {connection === "waiting" || code ? (
+              {pairRole === null ? (
+                <div className="pair-choices">
+                  <button
+                    className="pair-choice primary-choice"
+                    onClick={createSession}
+                  >
+                    <span>
+                      <ScanLine />
+                    </span>
+                    <div>
+                      <strong>{t.modal.createTitle}</strong>
+                      <small>{t.modal.createCopy}</small>
+                    </div>
+                    <ChevronRight />
+                  </button>
+                  <button className="pair-choice" onClick={openJoin}>
+                    <span>
+                      <Link2 />
+                    </span>
+                    <div>
+                      <strong>{t.modal.joinTitle}</strong>
+                      <small>{t.modal.joinCopy}</small>
+                    </div>
+                    <ChevronRight />
+                  </button>
+                </div>
+              ) : null}
+              {pairRole === "host" ? (
                 <>
                   <div className="qr-wrap">
                     {qr ? (
@@ -978,50 +1183,155 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
                         width={170}
                         height={170}
                         unoptimized
-                        alt={`QR code to pair using ${code}`}
+                        alt={t.modal.scanQr(code)}
                       />
                     ) : null}
                   </div>
-                  <p className="or">or enter</p>
+                  <p className="or">{t.modal.orEnter}</p>
                   <button
                     className="pair-code"
-                    onClick={() => void navigator.clipboard.writeText(code)}
-                    aria-label="Copy pairing code"
+                    onClick={() => {
+                      void navigator.clipboard.writeText(code);
+                      setNotice(t.modal.copied);
+                    }}
+                    aria-label={t.modal.copyCode}
                   >
                     {code.slice(0, 3)}-{code.slice(3)} <Copy size={16} />
                   </button>
                   <div className="waiting">
                     <span />
-                    {connection === "connecting"
-                      ? "Connecting…"
-                      : "Waiting for another device…"}
+                    {t.modal.waiting}
                   </div>
+                  <button className="pair-secondary" onClick={openJoin}>
+                    {t.modal.useCode}
+                  </button>
                 </>
               ) : null}
-              <div className="join-divider">
-                <span />
-                Have a code?
-                <span />
-              </div>
-              <label className="join-label">
-                Pairing code
-                <input
-                  value={joinCode}
-                  onChange={(e) =>
-                    setJoinCode(normalizePairingCode(e.target.value))
-                  }
-                  placeholder="ABC-123"
-                  autoCapitalize="characters"
-                />
-              </label>
-              <button
-                className="join-button"
-                onClick={() => void connect(joinCode, false)}
-                disabled={joinCode.length !== 6}
-              >
-                Join device
-              </button>
-              <small>Pairing links are temporary. Keep this window open.</small>
+              {pairRole === "guest" ? (
+                <div className="guest-pairing">
+                  {pairingPhase === "idle" || !code ? (
+                    <>
+                      <label className="join-label" htmlFor="pair-code-input">
+                        {t.modal.codeLabel}
+                        <input
+                          id="pair-code-input"
+                          value={joinCode}
+                          onChange={(e) =>
+                            setJoinCode(normalizePairingCode(e.target.value))
+                          }
+                          placeholder="ABC-123"
+                          autoCapitalize="characters"
+                          autoComplete="off"
+                          inputMode="text"
+                          maxLength={7}
+                          aria-describedby="pair-code-hint"
+                        />
+                      </label>
+                      <small id="pair-code-hint" className="field-hint">
+                        {t.modal.codeHint}
+                      </small>
+                      <button
+                        className="join-button"
+                        onClick={() => void connect(joinCode, false)}
+                        disabled={joinCode.length !== 6}
+                      >
+                        {t.modal.join}
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <div
+                        className={`device-bridge phase-${pairingPhase}`}
+                        aria-hidden="true"
+                      >
+                        <span>
+                          <Smartphone />
+                        </span>
+                        <i>
+                          <b />
+                        </i>
+                        <span>
+                          <Monitor />
+                        </span>
+                      </div>
+                      <button
+                        className="pair-code compact"
+                        onClick={() => void navigator.clipboard.writeText(code)}
+                        aria-label={t.modal.copyCode}
+                      >
+                        {code.slice(0, 3)}-{code.slice(3)} <Copy size={15} />
+                      </button>
+                      <div
+                        className="pair-progress"
+                        role="status"
+                        aria-live="polite"
+                      >
+                        <span className="done">
+                          <i>
+                            <Check />
+                          </i>
+                          {t.modal.progressOne}
+                        </span>
+                        <span
+                          className={
+                            pairingPhase === "negotiating" ||
+                            pairingPhase === "ready"
+                              ? "active"
+                              : ""
+                          }
+                        >
+                          <i>2</i>
+                          {t.modal.progressTwo}
+                        </span>
+                        <span
+                          className={pairingPhase === "ready" ? "active" : ""}
+                        >
+                          <i>3</i>
+                          {t.modal.progressThree}
+                        </span>
+                      </div>
+                      <div
+                        className={`pair-status ${pairingPhase === "failed" ? "failed" : ""}`}
+                      >
+                        {pairingPhase === "failed" ? <CircleAlert /> : <span />}
+                        <div>
+                          <strong>
+                            {pairingPhase === "failed"
+                              ? t.modal.failed
+                              : pairingPhase === "ready"
+                                ? t.modal.connected
+                                : pairingPhase === "negotiating"
+                                  ? t.modal.negotiating
+                                  : t.modal.finding}
+                          </strong>
+                          {pairingPhase === "failed" ? (
+                            <small>{t.modal.failedHelp}</small>
+                          ) : null}
+                        </div>
+                      </div>
+                      {pairingPhase === "failed" ? (
+                        <button
+                          className="join-button"
+                          onClick={() => void connect(code, false)}
+                        >
+                          <RotateCcw size={17} /> {t.modal.retry}
+                        </button>
+                      ) : null}
+                    </>
+                  )}
+                  <button
+                    className="pair-secondary"
+                    onClick={() => {
+                      disconnect();
+                      setPairRole(null);
+                      setPairOpen(true);
+                    }}
+                  >
+                    {t.modal.back}
+                  </button>
+                </div>
+              ) : null}
+              <small className="pair-footnote">{t.modal.temporary}</small>
             </motion.section>
           </motion.div>
         ) : null}
@@ -1039,14 +1349,14 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
               <FileUp />
             </div>
             <div>
-              <span>{peer?.name || "Paired device"} wants to send</span>
+              <span>{t.incoming(peer?.name || t.pairedDevice)}</span>
               <strong>{incoming.name}</strong>
               <small>{formatBytes(incoming.size)}</small>
             </div>
             <div>
-              <button onClick={reject}>Decline</button>
+              <button onClick={reject}>{t.decline}</button>
               <button className="primary" onClick={accept}>
-                Receive
+                {t.receive}
               </button>
             </div>
           </motion.div>
@@ -1063,7 +1373,7 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
           >
             <CircleAlert size={18} />
             <span>{notice}</span>
-            <button onClick={() => setNotice("")} aria-label="Dismiss">
+            <button onClick={() => setNotice("")} aria-label={t.dismiss}>
               <X size={16} />
             </button>
           </motion.div>
@@ -1076,9 +1386,11 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
 function DeviceCard({
   device,
   local = false,
+  labels,
 }: {
   device: DeviceInfo;
   local?: boolean;
+  labels: (typeof copy)[Locale];
 }) {
   const phone = /iOS|Android/.test(device.platform);
   return (
@@ -1091,7 +1403,7 @@ function DeviceCard({
     >
       {phone ? <Smartphone /> : <Monitor />}
       <div>
-        <small>{local ? "THIS DEVICE" : "PAIRED DEVICE"}</small>
+        <small>{local ? labels.thisDevice : labels.pairedDeviceLabel}</small>
         <strong>{device.name}</strong>
         <span>
           {device.browser} · {device.platform}
@@ -1105,9 +1417,11 @@ function DeviceCard({
 function TransferRow({
   item,
   onRemove,
+  labels,
 }: {
   item: Transfer;
   onRemove: () => void;
+  labels: (typeof copy)[Locale];
 }) {
   const url = item.kind === "url" && item.text ? safeUrl(item.text) : null;
   const open = () => {
@@ -1132,7 +1446,7 @@ function TransferRow({
         <div>
           <strong>{item.name}</strong>
           <span>
-            {item.direction === "in" ? "Received" : "Sent"} ·{" "}
+            {item.direction === "in" ? labels.received : labels.sent} ·{" "}
             {formatBytes(item.size)}
           </span>
         </div>
@@ -1147,10 +1461,10 @@ function TransferRow({
           {item.status === "complete" ? (
             item.verified ? (
               <>
-                <Check size={13} /> Verified
+                <Check size={13} /> {labels.verified}
               </>
             ) : (
-              "Complete"
+              labels.complete
             )
           ) : (
             `${Math.round(item.progress * 100)}% · ${item.status}`
@@ -1163,19 +1477,19 @@ function TransferRow({
             onClick={() => void navigator.clipboard.writeText(item.text || "")}
           >
             <Copy size={16} />
-            Copy
+            {labels.copy}
           </button>
         )}
         {url && (
           <a href={url} target="_blank" rel="noreferrer">
-            Open
+            {labels.open}
           </a>
         )}
-        {item.url && <button onClick={open}>Download</button>}
+        {item.url && <button onClick={open}>{labels.download}</button>}
         <button
           className="icon-button"
           onClick={onRemove}
-          aria-label={`Remove ${item.name}`}
+          aria-label={labels.remove(item.name)}
         >
           <X size={17} />
         </button>
