@@ -1,7 +1,8 @@
 import { z } from "zod";
 
 export const PROTOCOL_VERSION = "SEND/1" as const;
-export const CHUNK_SIZE = 64 * 1024;
+// 16 KiB remains interoperable with Safari/Firefox SCTP message limits.
+export const CHUNK_SIZE = 16 * 1024;
 
 const base = z.object({ protocol: z.literal(PROTOCOL_VERSION) });
 const id = z.string().min(8).max(128);

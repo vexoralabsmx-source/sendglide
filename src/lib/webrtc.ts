@@ -7,6 +7,9 @@ export class WebRTCTransport {
   private channel: RTCDataChannel | null = null;
   private signal: SignalConnection;
   private sender: string;
+  private pendingCandidates: RTCIceCandidateInit[] = [];
+  private offerStarted = false;
+  private disconnectTimer: ReturnType<typeof setTimeout> | null = null;
   onOpen?: () => void;
   onClose?: () => void;
   onMessage?: (data: string | ArrayBuffer) => void;
@@ -23,14 +26,24 @@ export class WebRTCTransport {
       candidate && void this.emit("ice", candidate.toJSON());
     this.peer.ondatachannel = ({ channel }) => this.bindChannel(channel);
     this.peer.onconnectionstatechange = () => {
-      if (
-        ["failed", "closed", "disconnected"].includes(this.peer.connectionState)
-      )
+      const state = this.peer.connectionState;
+      if (state === "connected") {
+        if (this.disconnectTimer) clearTimeout(this.disconnectTimer);
+        this.disconnectTimer = null;
+      } else if (state === "disconnected") {
+        if (this.disconnectTimer) clearTimeout(this.disconnectTimer);
+        this.disconnectTimer = setTimeout(() => {
+          if (this.peer.connectionState === "disconnected") this.onClose?.();
+        }, 8_000);
+      } else if (state === "failed" || state === "closed") {
         this.onClose?.();
+      }
     };
   }
 
   async startOffer(): Promise<void> {
+    if (this.offerStarted) return;
+    this.offerStarted = true;
     this.bindChannel(this.peer.createDataChannel("send-1", { ordered: true }));
     const offer = await this.peer.createOffer();
     await this.peer.setLocalDescription(offer);
@@ -43,6 +56,7 @@ export class WebRTCTransport {
       await this.peer.setRemoteDescription(
         payload.data as RTCSessionDescriptionInit,
       );
+      await this.flushCandidates();
       const answer = await this.peer.createAnswer();
       await this.peer.setLocalDescription(answer);
       await this.emit("answer", answer);
@@ -50,10 +64,11 @@ export class WebRTCTransport {
       await this.peer.setRemoteDescription(
         payload.data as RTCSessionDescriptionInit,
       );
+      await this.flushCandidates();
     } else if (payload.kind === "ice" && payload.data) {
-      await this.peer
-        .addIceCandidate(payload.data as RTCIceCandidateInit)
-        .catch(() => undefined);
+      const candidate = payload.data as RTCIceCandidateInit;
+      if (!this.peer.remoteDescription) this.pendingCandidates.push(candidate);
+      else await this.peer.addIceCandidate(candidate);
     }
   }
 
@@ -75,6 +90,7 @@ export class WebRTCTransport {
   }
 
   close(): void {
+    if (this.disconnectTimer) clearTimeout(this.disconnectTimer);
     this.channel?.close();
     this.peer.close();
     void this.signal.close();
@@ -94,5 +110,12 @@ export class WebRTCTransport {
     data?: unknown,
   ): Promise<void> {
     await this.signal.send({ sender: this.sender, kind, data });
+  }
+
+  private async flushCandidates(): Promise<void> {
+    const candidates = this.pendingCandidates.splice(0);
+    for (const candidate of candidates) {
+      await this.peer.addIceCandidate(candidate);
+    }
   }
 }

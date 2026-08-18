@@ -1,4 +1,17 @@
-import { createClient, type RealtimeChannel } from "@supabase/supabase-js";
+import {
+  createClient,
+  type RealtimeChannel,
+  type SupabaseClient,
+} from "@supabase/supabase-js";
+
+let sharedClient: SupabaseClient | null = null;
+
+function getSupabaseClient(url: string, key: string): SupabaseClient {
+  sharedClient ??= createClient(url, key, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  return sharedClient;
+}
 
 export type SignalPayload = {
   sender: string;
@@ -17,7 +30,7 @@ export async function connectSignaling(
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   if (url && key) {
-    const client = createClient(url, key);
+    const client = getSupabaseClient(url, key);
     const channel: RealtimeChannel = client.channel(`sendglide:${room}`, {
       config: { broadcast: { self: false } },
     });

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
+import dynamic from "next/dynamic";
 import QRCode from "qrcode";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
@@ -57,6 +58,12 @@ import {
 } from "@/lib/transfer";
 import { WebRTCTransport } from "@/lib/webrtc";
 
+const MoltenMetal = dynamic(
+  () =>
+    import("@/components/molten-metal").then((module) => module.MoltenMetal),
+  { ssr: false },
+);
+
 type ConnectionState =
   | "idle"
   | "waiting"
@@ -104,9 +111,11 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
   const [text, setText] = useState("");
   const [notice, setNotice] = useState("");
   const [dragging, setDragging] = useState(false);
+  const [pendingFileCount, setPendingFileCount] = useState(0);
   const transport = useRef<WebRTCTransport | null>(null);
   const signal = useRef<SignalConnection | null>(null);
   const fileQueue = useRef(new Map<string, File>());
+  const pendingFiles = useRef<File[]>([]);
   const incomingMeta = useRef<FileMetadata | null>(null);
   const incomingChunks = useRef<ArrayBuffer[]>([]);
   const incomingBytes = useRef(0);
@@ -166,6 +175,28 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
       setNotice("Peer connection is not ready. Try again.");
     }
   }, []);
+
+  const offerSelectedFiles = useCallback(
+    (files: File[]) => {
+      files.forEach((file) => {
+        const metadata = createFileMetadata(file);
+        fileQueue.current.set(metadata.transferId, file);
+        setTransfers((items) => [
+          {
+            id: metadata.transferId,
+            name: metadata.name,
+            size: metadata.size,
+            direction: "out",
+            progress: 0,
+            status: "waiting",
+          },
+          ...items,
+        ]);
+        sendProtocol(message({ type: "transfer-offer", file: metadata }));
+      });
+    },
+    [sendProtocol],
+  );
 
   useEffect(() => {
     if (connection !== "connected") return;
@@ -402,12 +433,18 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
         setConnection("connected");
         setPairOpen(false);
         sendProtocol(message({ type: "hello", device }));
+        if (pendingFiles.current.length) {
+          offerSelectedFiles(pendingFiles.current);
+          pendingFiles.current = [];
+          setPendingFileCount(0);
+          setNotice("Connected. Your queued files are ready for approval.");
+        }
       };
       rtc.onClose = () => setConnection("disconnected");
       rtc.onMessage = handleData;
       if (!host) await signaling.send({ sender: device.id, kind: "join" });
     },
-    [device, handleData, sendProtocol],
+    [device, handleData, offerSelectedFiles, sendProtocol],
   );
 
   useEffect(() => {
@@ -423,29 +460,20 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
   };
   const offerFiles = useCallback(
     (files: FileList | File[]) => {
+      const selected = Array.from(files);
+      if (!selected.length) return;
       if (connection !== "connected") {
-        setNotice("Connect another device before sending.");
+        pendingFiles.current.push(...selected);
+        setPendingFileCount(pendingFiles.current.length);
+        setNotice(
+          `${pendingFiles.current.length} file${pendingFiles.current.length === 1 ? " is" : "s are"} ready. Connect a device to send.`,
+        );
         setPairOpen(true);
         return;
       }
-      Array.from(files).forEach((file) => {
-        const metadata = createFileMetadata(file);
-        fileQueue.current.set(metadata.transferId, file);
-        setTransfers((items) => [
-          {
-            id: metadata.transferId,
-            name: metadata.name,
-            size: metadata.size,
-            direction: "out",
-            progress: 0,
-            status: "waiting",
-          },
-          ...items,
-        ]);
-        sendProtocol(message({ type: "transfer-offer", file: metadata }));
-      });
+      offerSelectedFiles(selected);
     },
-    [connection, sendProtocol],
+    [connection, offerSelectedFiles],
   );
   const sendText = () => {
     const value = text.trim();
@@ -530,6 +558,24 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
   return (
     <main className="app-shell">
       <div className="ambient" aria-hidden="true">
+        <MoltenMetal
+          className="molten-page-background"
+          color1="#000000"
+          color2="#fffdff"
+          color3="#575757"
+          speed={0.16}
+          scale={3.3}
+          detail={3}
+          glow={1.35}
+          coreSize={0.07}
+          swirl={0.75}
+          fold={-0.18}
+          blackPoint={0.09}
+          brightness={1.05}
+          grainIntensity={0.018}
+          mouseStrength={0.12}
+          opacity={0.42}
+        />
         <i className="ambient-one" />
         <i className="ambient-two" />
         <span />
@@ -687,7 +733,9 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
           <strong>
             {connection === "connected"
               ? "Drop anything here"
-              : "Connect, then drop anything"}
+              : pendingFileCount
+                ? `${pendingFileCount} file${pendingFileCount === 1 ? "" : "s"} ready to glide`
+                : "Connect, then drop anything"}
           </strong>
           <span>Files · Photos · Video · Text · Links</span>
           <small>
@@ -914,6 +962,13 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
               </button>
               <p className="eyebrow">PAIR A DEVICE</p>
               <h2 id="pair-title">Scan. Connect. Glide.</h2>
+              {pendingFileCount ? (
+                <div className="queued-files" role="status">
+                  <Paperclip size={15} />
+                  {pendingFileCount} queued file
+                  {pendingFileCount === 1 ? "" : "s"}
+                </div>
+              ) : null}
               {connection === "waiting" || code ? (
                 <>
                   <div className="qr-wrap">

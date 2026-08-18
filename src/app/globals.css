@@ -548,6 +548,21 @@ footer a {
   letter-spacing: -0.04em;
   margin: 8px 0 22px;
 }
+.queued-files {
+  width: max-content;
+  max-width: 100%;
+  min-height: 34px;
+  margin: -10px auto 18px;
+  padding: 7px 11px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--line));
+  border-radius: 999px;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--accent) 7%, var(--surface));
+  font-size: 11px;
+}
 .modal-close {
   position: absolute;
   right: 15px;
@@ -895,6 +910,20 @@ body {
   border-radius: 50%;
   filter: blur(110px);
   opacity: 0.1;
+}
+.molten-page-background {
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  opacity: 0.72;
+  mix-blend-mode: screen;
+  mask-image: radial-gradient(ellipse at 68% 16%, #000 0%, transparent 82%);
+}
+@media (prefers-color-scheme: light) {
+  .molten-page-background {
+    opacity: 0.16;
+    mix-blend-mode: multiply;
+  }
 }
 .ambient-one {
   background: var(--accent);
@@ -1489,6 +1518,10 @@ body {
 @media (max-width: 720px) {
   .app-shell > header {
     grid-template-columns: 1fr auto;
+  }
+  .molten-page-background {
+    opacity: 0.52;
+    mask-image: linear-gradient(to bottom, #000, transparent 64%);
   }
   .app-shell > header nav {
     display: none;
