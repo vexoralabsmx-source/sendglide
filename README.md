@@ -34,7 +34,7 @@ Without Supabase variables, signaling uses `BroadcastChannel`, which is useful f
 4. Restart the development server.
 5. Open the displayed LAN/HTTPS URL on both devices. Camera and some PWA features require a secure context.
 
-For production NAT traversal, configure `TURN_URL`, `TURN_USERNAME`, and `TURN_CREDENTIAL`. Prefer short-lived TURN credentials. They are served only through the rate-limited `/api/ice` endpoint, but are necessarily delivered to browsers for WebRTC negotiation.
+The ICE endpoint always includes Cloudflare STUN on ports 53 and 3478 plus Google STUN. For restrictive networks, configure `CLOUDFLARE_TURN_KEY_ID` and `CLOUDFLARE_TURN_API_TOKEN`; `/api/ice` exchanges that server-only key for one-hour browser credentials. Static `TURN_URL`, `TURN_USERNAME`, and `TURN_CREDENTIAL` values remain supported as an alternative.
 
 ## Quality commands
 
