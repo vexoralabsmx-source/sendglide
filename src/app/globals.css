@@ -745,6 +745,17 @@ footer a {
 .legal-page article {
   padding: 100px 0;
 }
+.legal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.legal-header .brand {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+}
 .legal-page h1 {
   font-size: clamp(46px, 8vw, 82px);
   letter-spacing: -0.06em;
