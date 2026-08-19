@@ -716,7 +716,14 @@ export function SendGlideApp({ initialCode }: { initialCode?: string }) {
         transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
       >
         <Link href="/" className="brand" aria-label={t.homeLabel}>
-          <BrandMark />
+          <Image
+            className="brand-logo"
+            src="/sendglide-logo-64.png"
+            width={36}
+            height={36}
+            alt=""
+            priority
+          />
           <span>SENDGLIDE</span>
         </Link>
         <nav aria-label={t.primaryNav}>
@@ -1495,15 +1502,6 @@ function TransferRow({
         </button>
       </div>
     </motion.article>
-  );
-}
-
-function BrandMark() {
-  return (
-    <span className="brand-mark" aria-hidden="true">
-      <i />
-      <ArrowRight size={14} />
-    </span>
   );
 }
 

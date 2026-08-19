@@ -1,13 +1,33 @@
-const CACHE = "sendglide-shell-v1";
+const CACHE = "sendglide-shell-v2";
 self.addEventListener("install", (event) =>
   event.waitUntil(
     caches
       .open(CACHE)
-      .then((cache) => cache.addAll(["/", "/privacy", "/icon.svg"])),
+      .then((cache) =>
+        cache.addAll([
+          "/",
+          "/privacy",
+          "/sendglide-logo-192.png",
+          "/sendglide-logo-512.png",
+        ]),
+      ),
   ),
 );
 self.addEventListener("activate", (event) =>
-  event.waitUntil(self.clients.claim()),
+  event.waitUntil(
+    Promise.all([
+      self.clients.claim(),
+      caches
+        .keys()
+        .then((keys) =>
+          Promise.all(
+            keys
+              .filter((key) => key !== CACHE)
+              .map((key) => caches.delete(key)),
+          ),
+        ),
+    ]),
+  ),
 );
 self.addEventListener("fetch", (event) => {
   if (

@@ -14,6 +14,23 @@ export const metadata: Metadata = {
   description:
     "Send files, photos, links, and text between your devices instantly. No account required.",
   applicationName: "SendGlide",
+  icons: {
+    icon: [
+      {
+        url: "/sendglide-logo-64.png",
+        sizes: "64x64",
+        type: "image/png",
+      },
+    ],
+    apple: [
+      {
+        url: "/apple-icon.png",
+        sizes: "180x180",
+        type: "image/png",
+      },
+    ],
+    shortcut: "/favicon.ico",
+  },
   openGraph: {
     title: "SendGlide",
     description: "Move anything. Anywhere.",

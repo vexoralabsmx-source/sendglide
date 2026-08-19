@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { ArrowLeft, Languages } from "lucide-react";
 import { useEffect, useState } from "react";
 import { detectLocale, type Locale } from "@/lib/i18n";
@@ -71,7 +72,16 @@ export function PrivacyContent() {
     <main className="legal-page">
       <header className="legal-header">
         <Link href="/" className="brand" aria-label={text.back}>
-          <ArrowLeft size={17} /> SENDGLIDE
+          <ArrowLeft size={17} />
+          <Image
+            className="brand-logo"
+            src="/sendglide-logo-64.png"
+            width={36}
+            height={36}
+            alt=""
+            priority
+          />
+          SENDGLIDE
         </Link>
         <div
           className="language-switch"
